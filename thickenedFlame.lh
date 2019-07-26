@@ -1,0 +1,90 @@
+// Copyright (C) 2019, ATA Engineering, Inc.
+// 
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the GNU Lesser General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+// 
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+// Lesser General Public License for more details.
+// 
+// You should have received a copy of the GNU Lesser General Public License
+// along with this program; if not, write to the Free Software Foundation,
+// Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+
+
+#ifndef THICKENEDFLAMEDEF
+#define THICKENEDFLAMEDEF
+
+#include <vector>
+#include <string>
+
+$type thickenedFlame param<options_list>;
+$type Fmax param<real>;
+$type coupleToSpeciesEqns param<bool>;
+$type dynamicThickening param<bool>;
+$type sensorMaxAtProgressVal param<real>;
+$type laminarFlameSpeed param<real>;
+$type laminarFlameThickness param<real>;
+$type lengthScale store<real>;
+
+$type useDynamicThickening Constraint;
+$type useStaticThickening Constraint;
+$type useThickenedFlame Constraint;
+
+$type useNoEfficiency Constraint;
+$type useWangEfficiency Constraint;
+$type useMaxEfficiency Constraint;
+
+$type LaminarSimulation Constraint;
+$type TurbulentSimulation Constraint;
+$type chemkin_diffusion Constraint;
+$type transportDB_diffusion Constraint;
+$type const_diffusion Constraint;
+$type schmidt_diffusion Constraint;
+
+$type thickeningFactor store<real>;
+$type thickeningFactor_f store<real>;
+$type efficiencyFactor store<real>;
+$type efficiencyFactor_f store<real>;
+$type flameSensor store<real>;
+$type flameSensor_f store<real>;
+
+$type RANSTurbulence Constraint;
+$type usingRANSTurbulence param<bool>;
+$type sgsTurbulence Constraint;
+$type usingSGSTurbulence param<bool>;
+$type turbulence_model param<std::string>;
+
+$type MS_LG_2DX Constraint;
+$type MS_LG_2DY Constraint;
+$type MS_LG_2DZ Constraint;
+$type multi_scale param<std::string>;
+
+$type progressVariableName param<std::string>;
+$type progressVariableUnburned store<real>;
+$type pvUnburnedValue Constraint;
+$type pvUnburnedMaxInletFuelTemp Constraint;
+$type pvUnburnedAvgInletFuelTemp Constraint;
+
+$type progressVariableBurned store<real>;
+$type pvBurnedEquilibrium Constraint;
+$type pvBurnedValue Constraint;
+
+$type turbulent_transport param<turbulent_transport>;
+
+$type vort_smooth store<vect3d>;
+$type numSmoothingSteps param<int>;
+$type X store<vect3d>;
+$type v3dSmooth_X store<vect3d>;
+$type v3dSmooth(X) store<vect3d>;
+
+// types for chemistry jacobian
+$type jacobianSanityChecks param<bool>;
+$type tf_chemistry_jacobian param<std::string>;
+$type use_tf_analytic_chemistry_jacobian Constraint;
+$type use_tf_numerical_chemistry_jacobian Constraint;
+
+#endif

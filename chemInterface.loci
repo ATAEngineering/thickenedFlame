@@ -1,0 +1,308 @@
+// Copyright (C) 2019, ATA Engineering, Inc.
+// 
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the GNU Lesser General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+// 
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+// Lesser General Public License for more details.
+// 
+// You should have received a copy of the GNU Lesser General Public License
+// along with this program; if not, write to the Free Software Foundation,
+// Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+
+
+#include <Loci.h>
+#include <iostream>
+
+$include "chem.lh"
+#include "eos.h"
+#include "turb_param.h"
+$include "thickenedFlame.lh"
+
+namespace chem {
+
+  $rule singleton (usingSGSTurbulence, usingRANSTurbulence <- 
+                   turbulence_model) {
+    $usingSGSTurbulence = false;
+    if ($turbulence_model == "wale" || $turbulence_model == "WALE" ||
+        $turbulence_model == "wallAdaptingLocalEddyViscosity" ||
+        $turbulence_model == "smag" || $turbulence_model == "smagorinsky") {
+      $usingSGSTurbulence = true;
+    } else if ($turbulence_model == "none") {
+      $usingRANSTurbulence = false;
+    } else {
+      $usingRANSTurbulence = true;
+    }
+  }
+
+  $rule constraint(sgsTurbulence <- usingSGSTurbulence) {
+    $sgsTurbulence = $usingSGSTurbulence ? ~EMPTY : EMPTY;
+  }
+
+  $rule constraint(RANSTurbulence <- usingRANSTurbulence) {
+    $RANSTurbulence = $usingRANSTurbulence ? ~EMPTY : EMPTY;
+  }
+  $rule default(thickenedFlame) { $thickenedFlame = options_list(""); }
+
+  $type usingAvgInletFuelTemp param<bool>;
+  $type usingMaxInletFuelTemp param<bool>;
+  $type usingPvBurnedValue param<bool>;
+  $type usingPvUnburnedValue param<bool>;
+  $type usingPvBurnedEquilibrium param<bool>;
+  $type efficiencyFactorModel param<int>;
+  // get thickened flame data from vars file
+  // input should look like the following
+  // thickenedFlame: <Fmax=10, laminarFlameSpeed=0.2, laminarFlameThickness=0.1,
+  //                  progressVariable="T", pvBurned=2000, pvUnburned=200, ...>
+  $rule singleton(Fmax, progressVariableName, usingPvUnburnedValue,
+                  laminarFlameSpeed, laminarFlameThickness, coupleToSpeciesEqns,
+                  sensorMaxAtProgressVal, usingAvgInletFuelTemp, 
+                  usingMaxInletFuelTemp, usingPvBurnedEquilibrium, 
+                  usingPvBurnedValue, dynamicThickening, efficiencyFactorModel
+                  <- thickenedFlame, eos, usingSGSTurbulence, 
+                  usingRANSTurbulence) {
+    // -----------------------------------------------------------------
+    if ($thickenedFlame.optionExists("Fmax")) {
+      $thickenedFlame.getOption("Fmax", $Fmax);
+    } else {
+      $Fmax = 1.0;  // default value
+    }
+    // -----------------------------------------------------------------
+    // detect the efficiency factor model
+    $efficiencyFactorModel = 0; //default to no CTI for DNS
+    if ($thickenedFlame.optionExists("efficiencyFactorModel")){
+      string EModel;
+      $thickenedFlame.getOption("efficiencyFactorModel", EModel);
+      if (EModel == "none") {
+        $efficiencyFactorModel= 0; //no model
+      } else if (EModel == "wang" || EModel == "Wang") {
+        $efficiencyFactorModel= 1;
+      } else if (EModel == "max" || EModel == "asymptotic") {
+        $efficiencyFactorModel = 2;
+      } else {
+        std::cerr
+            << "ERROR: Unrecognized input for the efficiencyFactorModel option. "
+            << "Set EModelfficiencyFactor to 'none', 'wang', or 'asymptotic'."
+            << std::endl;
+        Loci::Abort();
+      }
+    } else if ($usingSGSTurbulence || $usingRANSTurbulence) {
+      //check if a turbulence model is being used
+      $efficiencyFactorModel= 1; //default to Wang
+    }
+    if ($efficiencyFactorModel==1) {
+      // require laminar flame speed and thickness inputs for turbulent sims
+      if (!($thickenedFlame.optionExists("laminarFlameSpeed")) &&
+          !($thickenedFlame.optionExists("laminarFlameThickness"))) {
+         std::cerr
+            << "ERROR 'laminarFlameSpeed' and 'laminarFlameThickness' are "
+               "required for turbulent simulations"
+            << std::endl;
+        Loci::Abort();
+      }
+    }
+
+    // -----------------------------------------------------------------
+    if ($thickenedFlame.optionExists("coupleToSpeciesEquations")) {
+      string couple;
+      $thickenedFlame.getOption("coupleToSpeciesEquations", couple);
+      if (couple == "yes" || couple == "true") {
+        $coupleToSpeciesEqns = true;
+      } else if (couple == "no" || couple == "false") {
+        $coupleToSpeciesEqns = false;
+      } else {
+        std::cerr << "ERROR value of " << couple
+                  << " for 'coupleToSpeciesEquations' is not recognized!"
+                  << std::endl;
+        Loci::Abort();
+      }
+    } else {
+      $coupleToSpeciesEqns = true;  // default value
+    }
+
+    // -----------------------------------------------------------------
+    if ($thickenedFlame.optionExists("dynamicThickening")) {
+      string dynamic;
+      $thickenedFlame.getOption("dynamicThickening", dynamic);
+      if (dynamic == "yes" || dynamic == "true") {
+        $dynamicThickening = true;
+      } else if (dynamic == "no" || dynamic == "false") {
+        $dynamicThickening = false;
+      } else {
+        std::cerr << "ERROR value of " << dynamic
+                  << " for 'dynamicThickening' is not recognized!"
+                  << std::endl;
+        Loci::Abort();
+      }
+    } else {
+      $dynamicThickening = true;  // default value
+    }
+
+    // -----------------------------------------------------------------
+    if ($thickenedFlame.optionExists("sensorMaxAtProgressVal")) {
+      $thickenedFlame.getOption("sensorMaxAtProgressVal",
+                                $sensorMaxAtProgressVal);
+      if ($sensorMaxAtProgressVal >= 1.0 || $sensorMaxAtProgressVal < 0.0) {
+        std::cerr << "ERROR value of 'sensorMaxAtProgressVal' should be [0,1)."
+                  << std::endl;
+        Loci::Abort();
+      }
+    } else {
+      $sensorMaxAtProgressVal = 0.5;  // default value
+    }
+
+    // -----------------------------------------------------------------
+    if ($thickenedFlame.optionExists("laminarFlameSpeed")) {
+      $thickenedFlame.getOptionUnits("laminarFlameSpeed", "m/s",
+                                     $laminarFlameSpeed);
+    }
+
+    // -----------------------------------------------------------------
+    if ($thickenedFlame.optionExists("laminarFlameThickness")) {
+      $thickenedFlame.getOptionUnits("laminarFlameThickness", "m",
+                                     $laminarFlameThickness);
+    }
+    // -----------------------------------------------------------------
+    if ($thickenedFlame.optionExists("progressVariable")) {
+      $thickenedFlame.getOption("progressVariable", $progressVariableName);
+      if ($progressVariableName != "T") {
+        std::cerr << "ERROR progress variable " << $progressVariableName
+                  << " is not recognized! Use 'T'." << std::endl;
+        Loci::Abort();
+      }
+    } else {
+      $progressVariableName = "T";  // default to temperature
+    }
+
+    // -----------------------------------------------------------------
+    $usingPvBurnedEquilibrium = false;
+    $usingPvBurnedValue = false;
+    if ($thickenedFlame.optionExists("pvBurnedValue")) {
+      Loci::option_value_type ovt =
+          $thickenedFlame.getOptionValueType("pvBurnedValue");
+      if ($progressVariableName == "T") {
+        if (ovt == Loci::STRING) {
+          std::string burnedType;
+          $thickenedFlame.getOption("pvBurnedValue", burnedType);
+          if (burnedType == "equilibrium") {
+            $usingPvBurnedEquilibrium = true;
+          } else {
+            std::cerr << "ERROR pvBurnedValue must be real or 'equilibrium'"
+                      << std::endl;
+            Loci::Abort();
+          }
+        } else if (ovt == Loci::REAL || ovt == Loci::UNIT_VALUE) {
+          $usingPvBurnedValue = true;
+        } else {
+          std::cerr << "ERROR pvBurnedValue must be a real number or string"
+                    << std::endl;
+          std::cerr << "Type is " << ovt << std::endl;
+          Loci::Abort();
+        }
+      }
+    }
+
+    // -----------------------------------------------------------------
+    $usingMaxInletFuelTemp = false;
+    $usingAvgInletFuelTemp = false;
+    $usingPvUnburnedValue = false;
+    if ($thickenedFlame.optionExists("pvUnburnedValue")) {
+      Loci::option_value_type ovt =
+          $thickenedFlame.getOptionValueType("pvUnburnedValue");
+      if ($progressVariableName == "T") {
+        if (ovt == Loci::STRING) {
+          std::string unburnedType;
+          $thickenedFlame.getOption("pvUnburnedValue", unburnedType);
+          if (unburnedType == "maxInletFuelTemperature") {
+            $usingMaxInletFuelTemp = true;
+          } else if (unburnedType == "avgInletFuelTemperature") {
+            $usingAvgInletFuelTemp = true;
+          } else {
+            std::cerr << "ERROR pvUnburnedValue must be real, "
+                         "'maxInletFuelTemperature', or "
+                         "'avgInletFuelTemperature'"
+                      << std::endl;
+            Loci::Abort();
+          }
+        } else if (ovt == Loci::REAL || ovt == Loci::UNIT_VALUE) {
+          $usingPvUnburnedValue = true;
+        } else {
+          std::cerr << "ERROR pvUnburnedValue must be a real number or string"
+                    << std::endl;
+          Loci::Abort();
+        }
+      }
+      }
+  }
+
+  $rule constraint(pvUnburnedMaxInletFuelTemp <- usingMaxInletFuelTemp) {
+    $pvUnburnedMaxInletFuelTemp = ($usingMaxInletFuelTemp) ? ~EMPTY : EMPTY;
+  }
+  $rule constraint(pvUnburnedAvgInletFuelTemp <- usingAvgInletFuelTemp) {
+    $pvUnburnedAvgInletFuelTemp = ($usingAvgInletFuelTemp) ? ~EMPTY : EMPTY;
+  }
+
+  $rule constraint(pvBurnedValue <- usingPvBurnedValue) {
+    $pvBurnedValue = ($usingPvBurnedValue) ? ~EMPTY : EMPTY;
+  }
+  $rule constraint(pvUnburnedValue <- usingPvUnburnedValue) {
+    $pvUnburnedValue = ($usingPvUnburnedValue) ? ~EMPTY : EMPTY;
+  }
+
+  $rule constraint(pvBurnedEquilibrium <- usingPvBurnedEquilibrium) {
+    $pvBurnedEquilibrium = ($usingPvBurnedEquilibrium) ? ~EMPTY : EMPTY;
+  }
+  $rule constraint(useDynamicThickening, useStaticThickening <- 
+                   dynamicThickening) {
+    $useDynamicThickening = EMPTY;
+    $useStaticThickening = EMPTY;
+    if ($dynamicThickening) {
+      $useDynamicThickening = ~EMPTY;
+    } else {
+      $useStaticThickening = ~EMPTY;
+    }
+  }
+
+
+  $rule constraint(useNoEfficiency, useWangEfficiency, useMaxEfficiency <- 
+                   efficiencyFactorModel) {
+    $useNoEfficiency = EMPTY;
+    $useWangEfficiency = EMPTY;
+    $useMaxEfficiency = EMPTY;
+    if ($efficiencyFactorModel==0) {
+      $useNoEfficiency = ~EMPTY;
+    } else if ($efficiencyFactorModel==1) {
+      $useWangEfficiency = ~EMPTY;
+    } else if ($efficiencyFactorModel==2) {
+      $useMaxEfficiency = ~EMPTY;
+    } 
+  }
+
+  $rule default(numSmoothingSteps) { $numSmoothingSteps = 1; }
+
+  $rule default(tf_chemistry_jacobian) {
+    $tf_chemistry_jacobian = "analytic";
+  }
+
+  $rule constraint(use_tf_analytic_chemistry_jacobian,
+                   use_tf_numerical_chemistry_jacobian <- 
+                   tf_chemistry_jacobian) {
+    $use_tf_analytic_chemistry_jacobian = EMPTY;
+    $use_tf_numerical_chemistry_jacobian = EMPTY;
+    if ($tf_chemistry_jacobian == "analytic") {
+      $use_tf_analytic_chemistry_jacobian = ~EMPTY;
+    } else if ($tf_chemistry_jacobian == "none") {
+    } else if ($tf_chemistry_jacobian == "numerical") {
+      $use_tf_numerical_chemistry_jacobian = ~EMPTY;
+    } else {
+      cerr << "tf_chemistry_jacobian = " << $tf_chemistry_jacobian
+           << ", invalid option" << endl;
+      Loci::Abort();
+    }
+  }
+
+} // end chem namespace

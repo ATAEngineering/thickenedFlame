@@ -1,0 +1,360 @@
+// Copyright (C) 2019, ATA Engineering, Inc.
+// 
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the GNU Lesser General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+// 
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+// Lesser General Public License for more details.
+// 
+// You should have received a copy of the GNU Lesser General Public License
+// along with this program; if not, write to the Free Software Foundation,
+// Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+
+
+#include <Loci.h>
+// chem.lh must come before chemio.h
+$include "chem.lh"
+#include "chemio.h"
+#include "eos.h"
+#include "reaction.h"
+#include "qvi.h"
+
+#include <string>
+#include <iostream>
+$include "thickenedFlame.lh"
+
+using std::cout;
+using std::cerr;
+using std::endl;
+
+namespace chem {
+  // -------------------------------------------------------------------------
+  // Determine progress variable type for standard flame sensor
+  $type progressTemperature Constraint;
+  $rule constraint(progressTemperature <- progressVariableName) {
+    $progressTemperature = ($progressVariableName == "T") ? ~EMPTY : EMPTY;
+  }
+
+  $type progressVariable store<real>;
+  $rule pointwise(progressVariable <- temperature), 
+    constraint(progressTemperature, temperature) {
+    $progressVariable = $temperature;
+  }
+
+  // -------------------------------------------------------------------------
+  // Determine burned / unburned progress variables
+  // This is only done for progress variable based sensor
+  $rule pointwise(progressVariableBurned <- thickenedFlame),
+      constraint(pvBurnedValue, progressVariable) {
+    $thickenedFlame.getOptionUnits("pvBurnedValue", "K",
+                                   $progressVariableBurned);
+  }
+  $rule pointwise(progressVariableBurned),
+      constraint(pvBurnedEquilibrium, progressVariable) {
+    cerr << "progress variable burned equilibrium option not yet supported"
+         << endl;
+    Loci::Abort();
+    $progressVariableBurned = 0.0;
+  }
+
+  $rule pointwise(progressVariableUnburned <- thickenedFlame), 
+      constraint(pvUnburnedValue, progressVariable) {
+    $thickenedFlame.getOptionUnits("pvUnburnedValue", "K",
+                                   $progressVariableUnburned);
+  }
+  $rule pointwise(progressVariableUnburned), 
+      constraint(pvUnburnedMaxInletFuelTemp) {
+    cerr << "progress variable unburned max inlet temperature option not yet "
+            "supported"
+         << endl;
+    Loci::Abort();
+    $progressVariableUnburned = 0.0;
+  }
+  $rule pointwise(progressVariableUnburned), 
+      constraint(pvUnburnedAvgInletFuelTemp) {
+    cerr << "progress variable unburned avg inlet temperature option not yet "
+            "supported"
+         << endl;
+    Loci::Abort();
+    $progressVariableUnburned = 0.0;
+  }
+
+  // -------------------------------------------------------------------------
+  // Calculate reaction progress - only for progress variable sensor
+  $type reactionProgress store<real>;
+  $type reactionProgress_f store<real>;
+  $rule pointwise(reactionProgress <- progressVariable, progressVariableUnburned,
+                  progressVariableBurned) {
+    $reactionProgress = ($progressVariable - $progressVariableUnburned) /
+                        ($progressVariableBurned - $progressVariableUnburned);
+    // enforce [0-1] limits
+    $reactionProgress = max(min($reactionProgress, 1.0), 0.0);
+  }
+
+  $rule pointwise(reactionProgress_f <- (cr, cl)->(vol, reactionProgress)) {
+    $reactionProgress_f = ($cr->$reactionProgress * $cl->$vol +
+                           $cl->$reactionProgress * $cr->$vol) /
+                          ($cr->$vol + $cl->$vol);
+  }
+
+  $rule pointwise(reactionProgress_f <- ci -> reactionProgress) {
+    $reactionProgress_f = $ci -> $reactionProgress;
+  } 
+
+  //OUTPUT_SCALAR means that variable will only be output if requested
+  OUTPUT_SCALAR("cell2node(reactionProgress)",progress);
+
+  
+  // -------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // Compute the grid scale assuming using the projected area and volume
+  $type projectedArea store<real>;
+  $rule unit(projectedArea), constraint(vol) {
+    $projectedArea = 0.0; 
+  }
+
+  $rule apply(cl->projectedArea <- area, u_f)[Loci::Summation] {
+    const real weight = max(dot($u_f, $area.n),1e-12)/max(norm($u_f),1e-12);
+    join($cl->$projectedArea, weight*$area.sada);
+  }
+  $rule apply(cr->projectedArea <- area, u_f)[Loci::Summation] {
+    const real weight = max(-dot($u_f, $area.n),1e-12)/max(norm($u_f),1e-12);
+    join($cr->$projectedArea, weight*$area.sada);
+  }
+  $type gridScale store<real>;
+  $rule pointwise(gridScale <- projectedArea, vol){
+        $gridScale = $vol/$projectedArea;
+  }
+  $type gridScale_f store<real>;
+  $rule pointwise(gridScale_f <- ci->gridScale) {
+    $gridScale_f = $ci -> $gridScale;
+  }
+  OUTPUT_SCALAR("cell2node(gridScale)",gridScale);
+  OUTPUT_SCALAR("cell2node(projectedArea)",projectedArea);
+ 
+  // -------------------------------------------------------------------------
+  // Calculate dynamic flame sensor
+  $rule pointwise(flameSensor <- reactionProgress, sensorMaxAtProgressVal),
+      constraint(vol) {
+    real p = $sensorMaxAtProgressVal / (1.0 - $sensorMaxAtProgressVal);
+    real coeff = 1.0 / pow(pow($sensorMaxAtProgressVal, p) *
+                               (1.0 - $sensorMaxAtProgressVal),
+                           2.0);
+    $flameSensor =
+        coeff * pow(pow($reactionProgress, p) * (1.0 - $reactionProgress), 2.0);
+  }
+
+  $rule pointwise(flameSensor_f <- (cr, cl)->(vol, flameSensor)) {
+    $flameSensor_f =
+        ($cr->$flameSensor * $cl->$vol + $cl->$flameSensor * $cr->$vol) /
+        ($cr->$vol + $cl->$vol);
+  }
+
+  $rule pointwise(flameSensor_f <- ci -> flameSensor) {
+    $flameSensor_f = $ci -> $flameSensor;
+  } 
+
+  //OUTPUT_SCALAR means that variable will only be output if requested
+  OUTPUT_SCALAR("cell2node(flameSensor)",flameSensor);
+
+
+  // -------------------------------------------------------------------------
+  // Calculate flame thickening factor
+  $rule pointwise(thickeningFactor <- Fmax, flameSensor), 
+    constraint(useDynamicThickening, flameSensor) {
+    $thickeningFactor = 1.0 + ($Fmax - 1.0) * $flameSensor;
+  }
+  $rule pointwise(thickeningFactor <- Fmax), 
+    constraint(useStaticThickening, Fmax) {
+    $thickeningFactor = $Fmax;
+  }
+
+  $rule pointwise(thickeningFactor_f <- (cr, cl)->(vol, thickeningFactor)) {
+    $thickeningFactor_f = ($cr->$thickeningFactor * $cl->$vol +
+                           $cl->$thickeningFactor * $cr->$vol) /
+                          ($cr->$vol + $cl->$vol);
+  }
+
+  $rule pointwise(thickeningFactor_f <- ci -> thickeningFactor) {
+    $thickeningFactor_f = $ci -> $thickeningFactor;
+  } 
+
+  //OUTPUT_SCALAR means that variable will only be output if requested
+  OUTPUT_SCALAR("cell2node(thickeningFactor)",F);
+
+  // -------------------------------------------------------------------------
+  // Calculate inputs to wrinkling factor
+
+  // Calculate grid length scale
+  $type Cs param<real>;
+  $rule default(Cs) { $Cs = 0.1; }
+  $rule pointwise(lengthScale <- Cs, vol, gridScale){
+    $lengthScale = $Cs * $gridScale;
+  }
+  $type lengthScale_f store<real>;
+  $rule pointwise(lengthScale_f <- (cr, cl)->(vol, lengthScale)) {
+    $lengthScale_f =
+        ($cr->$lengthScale * $cl->$vol + $cl->$lengthScale * $cr->$vol) /
+        ($cr->$vol + $cl->$vol);
+  }
+
+  $rule pointwise(lengthScale_f <- ci->lengthScale) {
+    $lengthScale_f = $ci->$lengthScale;
+  } 
+
+  OUTPUT_SCALAR("cell2node(lengthScale)",turbLengthScale);
+
+  $type uSGS store<real>;
+  $rule pointwise(uSGS <- tmuu, lengthScale, rho) {
+    real tke = pow($tmuu / ($rho * $lengthScale), 2.0);
+    $uSGS = sqrt(tke);
+  }
+
+  $type ReTurb store<real>;
+  $rule pointwise(ReTurb <- lengthScale, uSGS, muu, rho) {
+    $ReTurb = $rho * $uSGS * $lengthScale / $muu;
+  }
+  
+  $type ReTurb_f store<real>;
+  $rule pointwise(ReTurb_f <- (cr, cl)->(vol, ReTurb)) {
+    $ReTurb_f = ($cr->$ReTurb * $cl->$vol + $cl->$ReTurb * $cr->$vol) /
+                ($cr->$vol + $cl->$vol);
+  }
+
+  $rule pointwise(ReTurb_f <- ci->ReTurb) {
+    $ReTurb_f = $ci->$ReTurb;
+  } 
+
+  OUTPUT_SCALAR("cell2node(ReTurb)",ReTurb);
+
+  $type betaWrinkling store<real>;
+  $rule pointwise(betaWrinkling <- ReTurb) { 
+    const real cms = 0.28;
+    $betaWrinkling =
+        max(2.0 * log(2.0) / (3.0 * cms * (sqrt($ReTurb) - 1.0)), 0.0);
+  }
+
+  double WrinklingFactorXi(const double &beta, const double &filterSize,
+                           const double &velFluc,
+                           const double &laminarFlameSpeed,
+                           const double &flameThickness) {
+    const double eps = 1.0e-10;
+    double gamma = 0.75 *
+                   exp(-1.2 * pow(velFluc / (laminarFlameSpeed + eps), -0.3)) *
+                   pow(filterSize / (flameThickness + eps), 2.0 / 3.0);
+    return 1.0 + beta * velFluc / (laminarFlameSpeed + eps) * gamma;
+  }
+
+  // -------------------------------------------------------------------------
+  // Calculate laplacian of vorticity -- used for velocity fluctuation at
+  // thickened flame length scale
+  $type laplace_vort_vol store<vect3d>;
+  $rule unit(laplace_vort_vol), constraint(vol) {
+    $laplace_vort_vol = vect3d(0., 0., 0.); 
+  }
+  $rule apply(cl->laplace_vort_vol <- gradv3d_f(vort), area)[Loci::Summation] {
+    join($cl->$laplace_vort_vol,
+         $area.sada * dot($gradv3d_f(vort), $area.n));
+  }
+  $rule apply(cr->laplace_vort_vol <- gradv3d_f(vort), area)[Loci::Summation] {
+    join($cr->$laplace_vort_vol,
+         -$area.sada * dot($gradv3d_f(vort), $area.n));
+  }
+
+  $type laplace_vort_raw store<vect3d>;
+  $rule pointwise(laplace_vort_raw <- laplace_vort_vol, vol) {
+    $laplace_vort_raw = $laplace_vort_vol / $vol;
+  }
+
+  $type laplace_vort store<vect3d>;
+  $rule pointwise(laplace_vort <- v3dSmooth(laplace_vort_raw)) {
+    $laplace_vort = $v3dSmooth(laplace_vort_raw);
+  }
+
+  $type laplace_vort_f store<vect3d>;
+  $rule pointwise(laplace_vort_f <- (cr, cl)->(vol, laplace_vort)) {
+    $laplace_vort_f =
+        ($cr->$laplace_vort * $cl->$vol + $cl->$laplace_vort * $cr->$vol) /
+        ($cr->$vol + $cl->$vol);
+  }
+
+  $rule pointwise(laplace_vort_f <- ci->laplace_vort) {
+    $laplace_vort_f = $ci->$laplace_vort;
+  } 
+
+  OUTPUT_VECTOR("cell2node_v3d(laplace_vort)",laplace_vort);
+
+
+  $type tfVelFluc store<real>;
+  $rule pointwise(tfVelFluc <- laplace_vort, lengthScale, thickeningFactor,
+                  laminarFlameThickness) {
+    const real tfLengthScale = $thickeningFactor * $laminarFlameThickness;
+    const real c2 = 2.0;
+    const real nx = 10.0;
+    const real coeff = c2 * pow($lengthScale, 3.0);
+    const real wangCorrection =
+        pow(tfLengthScale / (nx * $lengthScale), 1.0 / 3.0);
+    $tfVelFluc = coeff * norm($laplace_vort) * wangCorrection;
+  }
+
+  $type tfVelFluc_f store<real>;
+
+  $rule pointwise(tfVelFluc_f <- (cr, cl)->(vol, tfVelFluc)) {
+    $tfVelFluc_f = ($cr->$tfVelFluc * $cl->$vol + $cl->$tfVelFluc * $cr->$vol) /
+                   ($cr->$vol + $cl->$vol);
+  }
+
+  $rule pointwise(tfVelFluc_f <- ci->tfVelFluc) {
+    $tfVelFluc_f = $ci->$tfVelFluc;
+  } 
+
+  // OUTPUT_SCALAR means that variable will only be output if requested
+  OUTPUT_SCALAR("cell2node(tfVelFluc)",tfVelFluc);
+
+
+  // -------------------------------------------------------------------------
+  // Adjust the efficiency factor formulation to ensure that it is not activated
+  // in non-flame regions
+  // Calculate efficiency factor
+  $rule pointwise(efficiencyFactor <- betaWrinkling, lengthScale, tfVelFluc,
+                  laminarFlameSpeed, laminarFlameThickness, thickeningFactor), 
+    constraint(useWangEfficiency, tfVelFluc) {
+    real filterSize = $lengthScale * $thickeningFactor;
+    real xiLaminar =
+        WrinklingFactorXi($betaWrinkling, filterSize, $tfVelFluc,
+                          $laminarFlameSpeed, $laminarFlameThickness);
+    real xiThickened = WrinklingFactorXi(
+        $betaWrinkling, filterSize, $tfVelFluc, $laminarFlameSpeed,
+        $laminarFlameThickness * $thickeningFactor);
+    $efficiencyFactor = max(
+        min(xiLaminar / xiThickened, pow($thickeningFactor, 2.0 / 3.0)), 1.0);
+  }
+
+  $rule pointwise(efficiencyFactor<-thickeningFactor), 
+      constraint(useMaxEfficiency,thickeningFactor) {
+    $efficiencyFactor = pow($thickeningFactor,2.0/3.0);
+  }
+
+  $rule pointwise(efficiencyFactor), constraint(useNoEfficiency) {
+    $efficiencyFactor = 1.0;
+  }
+
+  $rule pointwise(efficiencyFactor_f <- (cr, cl)->(vol, efficiencyFactor)) {
+    $efficiencyFactor_f = ($cr->$efficiencyFactor * $cl->$vol +
+                           $cl->$efficiencyFactor * $cr->$vol) /
+                          ($cr->$vol + $cl->$vol);
+  }
+
+  $rule pointwise(efficiencyFactor_f <- ci -> efficiencyFactor) {
+    $efficiencyFactor_f = $ci -> $efficiencyFactor;
+  } 
+
+  //OUTPUT_SCALAR means that variable will only be output if requested
+  OUTPUT_SCALAR("cell2node(efficiencyFactor)",E);
+
+
+}

@@ -1,0 +1,396 @@
+// Copyright (C) 2019, ATA Engineering, Inc.
+// 
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the GNU Lesser General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+// 
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+// Lesser General Public License for more details.
+// 
+// You should have received a copy of the GNU Lesser General Public License
+// along with this program; if not, write to the Free Software Foundation,
+// Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+
+
+#include <Loci.h>
+// chem.lh must come before chemio.h
+$include "chem.lh"
+#include "chemio.h"
+#include "eos.h"
+#include "reaction.h"
+#include "qvi.h"
+#include "transport_db.h"
+#include "turb_param.h"
+
+#include <string>
+#include <iostream>
+$include "thickenedFlame.lh"
+
+using std::cout;
+using std::cerr;
+using std::endl;
+
+namespace chem {
+
+  $rule constraint(useThickenedFlame <- coupleToSpeciesEqns) {
+    $useThickenedFlame = $coupleToSpeciesEqns ? ~EMPTY : EMPTY;
+  }
+
+  $type tran param<transport_db>;
+  $type transportDatabase blackbox<transportDB>;
+  $type rhod param<real>;
+  $type laminarSchmidtNumber param<real>;
+
+  // compute diffusion coefficients using CHEMKIN library.
+  $rule pointwise(thickenedFlame::diff <- numSpecies, tran, turbulent_transport,
+                  Pambient, temperature_f, mixture_f, gaugePressure_f, rho_f,
+                  tmuu_f, thickeningFactor_f, efficiencyFactor_f,
+                  flameSensor_f),
+    constraint(chemkin_diffusion, (cr, cl)->(vol, mixture), 
+               useThickenedFlame), prelude {
+    $diff.setVecSize(*$numSpecies);
+  } compute {
+    const int ns = $numSpecies;
+    if (ns == 1) return;
+
+    tmp_array<real> mf(ns);
+
+    const real sct = $turbulent_transport.TurbulentSchmidtNumber;
+    real mutsc = (1.0 - $flameSensor_f) * $tmuu_f / sct;
+
+    real tface = $temperature_f;
+    real pface = $gaugePressure_f + $Pambient;
+
+    real sum = 0.0;
+    for (int i = 0; i < ns; ++i) {
+      mf[i] = $mixture_f[i];
+      sum += mf[i] / $tran.MolecularWeight(i);
+    }
+
+    for (int i = 0; i < ns; ++i) {
+      mf[i] = mf[i] / ($tran.MolecularWeight(i) * sum);
+    }
+    $tran.mcadif(pface, tface, mf, $diff);
+
+    for (int i = 0; i < ns; ++i) {
+      $diff[i] = $diff[i] * $rho_f * $thickeningFactor_f *
+                 $efficiencyFactor_f + mutsc;
+    }
+  }
+
+  // compute diffusion coefficients using transport database
+  $rule pointwise(thickenedFlame::diff <- numSpecies, transportDatabase,
+                  turbulent_transport, Pambient, temperature_f, mixture_f,
+                  gaugePressure_f, rho_f, tmuu_f, thickeningFactor_f,
+                  efficiencyFactor_f, flameSensor_f),
+      constraint(transportDB_diffusion, (cr, cl)->(vol, mixture), 
+                 useThickenedFlame), prelude {
+    $diff.setVecSize(*$numSpecies);
+  } compute {
+    const int ns = $numSpecies;
+    if (ns == 1) return;
+    tmp_array<real> mf(ns);
+
+    const real sct = $turbulent_transport.TurbulentSchmidtNumber;
+    real mutsc = (1.0 - $flameSensor_f) * $tmuu_f / sct;
+
+    real tface = $temperature_f;
+    real pface = $gaugePressure_f + $Pambient;
+
+    $transportDatabase.getDiffusion($mixture_f, pface, tface, $diff);
+    for (int i = 0; i < ns; ++i) {
+      $diff[i] = $diff[i] * $rho_f * $thickeningFactor_f *
+                 $efficiencyFactor_f + mutsc;
+    }
+  }
+  // compute diffusion for constant diffusion model
+  $rule pointwise(thickenedFlame::diff <- turbulent_transport, tmuu_f, rhod,
+                  numSpecies, thickeningFactor_f, efficiencyFactor_f,
+                  flameSensor_f),
+      constraint(area, const_diffusion, useThickenedFlame), prelude {
+    $diff.setVecSize(*$numSpecies);
+  } compute {
+    const int ns = $numSpecies;
+    const real sct = $turbulent_transport.TurbulentSchmidtNumber;
+    const real mutsc = (1.0 - $flameSensor_f) * $tmuu_f / sct;
+    for (int i = 0; i < ns; ++i) {
+      $diff[i] = $rhod * $thickeningFactor_f * $efficiencyFactor_f + mutsc;
+    }
+  }
+
+  // compute diffusion for laminar schmidt model
+  $rule pointwise(thickenedFlame::diff <- numSpecies, turbulent_transport,
+                  tmuu_f, muu_f, laminarSchmidtNumber, thickeningFactor_f,
+                  efficiencyFactor_f, flameSensor_f),
+      constraint(schmidt_diffusion, muu_f, tmuu_f, useThickenedFlame), prelude {
+    $diff.setVecSize(*$numSpecies);
+  } compute {
+    const int ns = $numSpecies;
+    const real sct = $turbulent_transport.TurbulentSchmidtNumber;
+    const real mutsc = (1.0 - $flameSensor_f) * $tmuu_f / sct;
+    const real sc = $laminarSchmidtNumber;
+    const real musc = $muu_f / sc;
+    for (int i = 0; i < ns; ++i) {
+      $diff[i] = musc * $thickeningFactor_f * $efficiencyFactor_f + mutsc;
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // modify chemistry source term to keep flame speed the same
+  $rule pointwise(thickenedFlame::chemistrySrc <- eos, eos_state, reactor,
+                  rates, mixture, Tf, vol, qvi, thickeningFactor, 
+                  efficiencyFactor, jacobianSanityChecks), 
+        constraint(useThickenedFlame, vol), 
+  prelude {
+    $chemistrySrc.setVecSize($eos->numSpecies());
+  } compute {
+    const int ns = $eos.numSpecies();
+    const real T = $eos_state.temperature();
+    if (T > real($Tf)) {
+      tmp_array<real> w(ns);
+      $reactor.compute_w($chemistrySrc, $rates, $mixture, $eos_state, $eos);
+      for (int ii = 0; ii < ns; ++ii) {
+        $chemistrySrc[ii] *= $efficiencyFactor / $thickeningFactor;
+      }
+    } else {
+      for (int ii = 0; ii < ns; ++ii) {
+        $chemistrySrc[ii] = 0.0;
+      }
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  $type chemistry_jacobian param<std::string>;
+  $rule singleton(jacobianSanityChecks <- chemistry_jacobian), 
+      constraint(useThickenedFlame) {
+    if ($chemistry_jacobian != "none") {
+      cerr << "ERROR: 'chemistry_jacobian' should be set to 'none' with "
+              "thickenedFlame module use 'tf_chemistry_jacobian' to select "
+              "numerical or analytic jacobian"
+           << endl;
+      Loci::Abort();
+    }
+    $jacobianSanityChecks = true;
+  }
+
+  // modify chemistry jacobians to use thickening and efficiency factors
+  $type ChemStabilityCoef param<real>;
+  $rule apply(pc_srcJ <- eos_state, dTdq, mixture, vol, qvi, eos, reactor,
+              rates, Tf, ChemStabilityCoef, thickeningFactor,
+              efficiencyFactor, jacobianSanityChecks)[Loci::Summation],
+      constraint(use_tf_analytic_chemistry_jacobian, reactionMechanismSimulation,
+                 geom_cells, rhop_primitive, useThickenedFlame) {
+    const real T = $eos_state.temperature();
+    if (T > real($Tf)) {
+      const int ns = $qvi.numSpecies();
+      const int ei = $qvi.totalEnergyIndex();
+      // Allocate temporaries
+      tmp_array<real> dwdr(ns);
+      const real dtfFac = $efficiencyFactor / $thickeningFactor;
+
+      const real dTdp = $dTdq[ei];
+      const real v = $vol * $ChemStabilityCoef;
+      for (int s = 0; s < ns; ++s) {
+        $reactor.compute_dwdrs(dwdr, s, $rates, dTdp, $dTdq, $mixture,
+                               $eos_state, $eos);
+        for (int j = 0; j < ns; ++j) {
+          $pc_srcJ[s][j] += v * dwdr[j] * dtfFac;
+        }
+
+        const real dwdp =
+            $reactor.compute_dwdp(s, $rates, dTdp, $mixture, $eos_state, $eos);
+
+        $pc_srcJ[s][ei] += v * dwdp * dtfFac;
+      }
+    }
+  }
+
+  $rule apply(pc_srcJ <- eos_state, drdq, mixture, eos_mixture_state, vol, qvi,
+              eos, reactor, rates, Tf, ChemStabilityCoef, thickeningFactor,
+              efficiencyFactor, jacobianSanityChecks)[Loci::Summation],
+      constraint(use_tf_analytic_chemistry_jacobian, useThickenedFlame,
+                 reactionMechanismSimulation, geom_cells, pt_primitive) {
+    const real T = $eos_state.temperature();
+    if (T > real($Tf)) {
+      const int ns = $qvi.numSpecies();
+      const int ei = $qvi.totalEnergyIndex();
+      const int Ti = $qvi.temperatureIndex();
+      // Allocate temporaries
+      tmp_array<real> dwdY(ns - 1);
+      const real dtfFac = $efficiencyFactor / $thickeningFactor;
+
+      const real drdp = $drdq[ei];
+      const real drdT = $drdq[Ti];
+      const real v = $vol * $ChemStabilityCoef;
+      for (int s = 0; s < ns; ++s) {
+        real dwdp, dwdT;
+        $reactor.compute_dwdq(dwdY, dwdp, dwdT, s, $rates, $drdq, drdp, drdT,
+                              $mixture, $eos_state, $eos);
+        for (int j = 0; j < ns - 1; ++j) {
+          $pc_srcJ[s][j] += v * dwdY[j] * dtfFac;
+        }
+
+        $pc_srcJ[s][ei] += v * dwdp * dtfFac;
+        $pc_srcJ[s][Ti] += v * dwdT * dtfFac;
+      }
+    }
+  }
+
+  // numerical jacobians
+  $rule apply(pc_srcJ <- Pambient, epsilon, vol, qvi, eos, eos_state, reactor,
+              rates, qp, Tf, ChemStabilityCoef, thickeningFactor, 
+              efficiencyFactor, jacobianSanityChecks)[Loci::Summation],
+      constraint(qp, use_tf_numerical_chemistry_jacobian, geom_cells,
+                 reactionMechanismSimulation, rhop_primitive, 
+                 useThickenedFlame) {
+    real seps = sqrt($epsilon);
+    const real T = $eos_state.temperature();
+    if (T > real($Tf)) {
+      const int vs = $qvi.vectorSize();
+      const int ns = $qvi.numSpecies();
+      const int nr = max($reactor.num_rates(), 1);
+      tmp_array<real> w(ns), dw(ns), qt(vs);
+      tmp_array<reaction::rates> local_rates(nr);
+      tmp_array<real> mixture(ns);
+      tmp_array<real> qptmp(vs);
+      for (int i = 0; i < vs; ++i) qptmp[i] = $qp[i];
+      primitive_vector::getMixture(mixture, qptmp, $qvi);
+      EOS::State s =
+          $eos_state;  // primitive_vector::getState(qptmp,*qvi,*eos) ;
+      $reactor.extract_rates(local_rates, $eos, s.temperature());
+      $reactor.compute_w(w, local_rates, mixture, $eos_state, $eos);
+      tmp_array<real> h(vs);
+      const int mi = $qvi.momentumIndex();
+      const int ei = $qvi.totalEnergyIndex();
+      vect3d u = vect3d($qp[mi + 0], $qp[mi + 1], $qp[mi + 2]);
+      const real mev = s.soundSpeed() + norm(u);
+
+      for (int j = 0; j < vs; ++j) h[j] = seps * s.density();
+      for (int j = 0; j < 3; ++j) h[mi + j] = seps * mev;
+      h[ei] = seps * mev * mev * s.density();
+
+      real v = $vol * $ChemStabilityCoef;
+      const real dtfFac = $efficiencyFactor / $thickeningFactor;
+      for (int j = 0; j < ns; ++j) {
+        real tmp = qptmp[j];
+        qptmp[j] += h[j];
+        primitive_vector::getMixture(mixture, qptmp, $qvi);
+        EOS::State s = primitive_vector::getState(qptmp, $Pambient, $qvi, $eos);
+        $reactor.extract_rates(local_rates, $eos, s.temperature());
+        $reactor.compute_w(dw, local_rates, mixture, s, $eos);
+        real dh = qptmp[j] - tmp;
+        real dhr = v / dh;
+        qptmp[j] = tmp;
+        for (int i = 0; i < ns; ++i) {
+          $pc_srcJ[i][j] += (dw[i] - w[i]) * dhr * dtfFac;
+        }
+      }
+      // Now compute dwdp
+
+      real tmp = qptmp[ei];
+      qptmp[ei] += h[ei];
+
+      primitive_vector::getMixture(mixture, qptmp, $qvi);
+      s = primitive_vector::getState(qptmp, $Pambient, $qvi, $eos);
+      $reactor.extract_rates(local_rates, $eos, s.temperature());
+      $reactor.compute_w(dw, local_rates, mixture, s, $eos);
+      real dh = qptmp[ei] - tmp;
+      real dhr = v / dh;
+      qptmp[ei] = tmp;
+      for (int i = 0; i < ns; ++i) {
+        $pc_srcJ[i][ei] += (dw[i] - w[i]) * dhr * dtfFac;
+      }
+    }
+  }
+
+  $rule apply(pc_srcJ <- Pambient, epsilon, vol, qvi, eos, eos_state, reactor,
+              rates, qp, Tf, ChemStabilityCoef, thickeningFactor,
+              efficiencyFactor, jacobianSanityChecks)[Loci::Summation],
+      constraint(qp, use_tf_numerical_chemistry_jacobian, geom_cells,
+                 reactionMechanismSimulation, pt_primitive, useThickenedFlame) {
+    real seps = sqrt($epsilon);
+    const real T = $eos_state.temperature();
+    if (T > real($Tf)) {
+      const int vs = $qvi.vectorSize();
+      const int ns = $qvi.numSpecies();
+      const int nr = max($reactor.num_rates(), 1);
+      tmp_array<real> w(ns), dw(ns), qt(vs);
+      tmp_array<reaction::rates> local_rates(nr);
+      tmp_array<real> mixture(ns);
+      tmp_array<real> qptmp(vs);
+      for (int i = 0; i < vs; ++i) qptmp[i] = $qp[i];
+      primitive_vector::getMixture(mixture, qptmp, $qvi);
+      EOS::State s = $eos_state;
+      $reactor.extract_rates(local_rates, $eos, s.temperature());
+      $reactor.compute_w(w, local_rates, mixture, $eos_state, $eos);
+      tmp_array<real> h(vs);
+      const int mi = $qvi.momentumIndex();
+      const int ei = $qvi.totalEnergyIndex();
+      const int Ti = $qvi.temperatureIndex();
+      vect3d u = vect3d($qp[mi + 0], $qp[mi + 1], $qp[mi + 2]);
+      const real mev = s.soundSpeed() + norm(u);
+
+      for (int j = 0; j < vs; ++j) h[j] = seps;
+      for (int j = 0; j < 3; ++j) h[mi + j] = seps * mev;
+      h[ei] = seps * mev * mev * s.density();
+      h[Ti] = seps * s.temperature();
+
+      real v = $vol * $ChemStabilityCoef;
+      const real dtfFac = $efficiencyFactor / $thickeningFactor;
+
+      for (int j = 0; j < ns - 1; ++j) {
+        real tmp = qptmp[j];
+        if (mixture[ns - 1] < h[j] && mixture[j] >= h[j]) h[j] = -h[j];
+        qptmp[j] += h[j];
+        mixture[j] = qptmp[j];
+        mixture[ns - 1] -= h[j];
+        EOS::State s = primitive_vector::getState(qptmp, $Pambient, $qvi, $eos);
+        $reactor.extract_rates(local_rates, $eos, s.temperature());
+        $reactor.compute_w(dw, local_rates, mixture, s, $eos);
+        real dh = qptmp[j] - tmp;
+        real dhr = v / dh;
+        qptmp[j] = tmp;
+        mixture[j] = qptmp[j];
+        mixture[ns - 1] += h[j];
+        for (int i = 0; i < ns; ++i) {
+          $pc_srcJ[i][j] += (dw[i] - w[i]) * dhr * dtfFac;
+        }
+      }
+      // Now compute dwdp
+
+      real tmp = qptmp[ei];
+      qptmp[ei] += h[ei];
+
+      primitive_vector::getMixture(mixture, qptmp, $qvi);
+      s = primitive_vector::getState(qptmp, $Pambient, $qvi, $eos);
+      $reactor.extract_rates(local_rates, $eos, s.temperature());
+      $reactor.compute_w(dw, local_rates, mixture, s, $eos);
+      real dh = qptmp[ei] - tmp;
+      real dhr = v / dh;
+      qptmp[ei] = tmp;
+      for (int i = 0; i < ns; ++i) {
+        $pc_srcJ[i][ei] += (dw[i] - w[i]) * dhr * dtfFac;
+      }
+
+      // Now compute dwdT
+
+      tmp = qptmp[Ti];
+      qptmp[Ti] += h[Ti];
+
+      primitive_vector::getMixture(mixture, qptmp, $qvi);
+      s = primitive_vector::getState(qptmp, $Pambient, $qvi, $eos);
+      $reactor.extract_rates(local_rates, $eos, s.temperature());
+      $reactor.compute_w(dw, local_rates, mixture, s, $eos);
+      dh = qptmp[Ti] - tmp;
+      dhr = v / dh;
+      qptmp[Ti] = tmp;
+      for (int i = 0; i < ns; ++i) {
+        $pc_srcJ[i][Ti] += (dw[i] - w[i]) * dhr * dtfFac;
+      }
+    }
+  }
+
+}  // end chem namespace

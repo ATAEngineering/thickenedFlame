@@ -1,0 +1,24 @@
+# ignore compilation files
+*.o
+*.lo
+*.d
+*.cc
+
+# ignore temporary files
+*.~
+
+# ignore LaTex files
+*.bbl
+*.blg
+
+# ignore compiled library
+*.so
+
+# ignore vscode files
+.vscode
+
+# ignore texstudio files
+*.aux
+*.pdf
+*.log
+*.gz

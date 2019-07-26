@@ -1,0 +1,223 @@
+// Copyright (C) 2019, ATA Engineering, Inc.
+// 
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the GNU Lesser General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+// 
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+// Lesser General Public License for more details.
+// 
+// You should have received a copy of the GNU Lesser General Public License
+// along with this program; if not, write to the Free Software Foundation,
+// Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+
+
+#include <Loci.h>
+// chem.lh must come before chemio.h
+$include "chem.lh"
+#include "chemio.h"
+
+#include <iostream>
+$include "thickenedFlame.lh"
+
+using std::cout;
+using std::cerr;
+using std::endl;
+
+namespace chem {
+  // setup cell and node weights for smoothing
+  $type nodeWeightSumSm store<real>;
+  $type cellWeightSumSm store<real>;
+
+  $rule unit(nodeWeightSumSm), constraint(pos) { $nodeWeightSumSm = 0.0; }
+  $rule apply(face2node->nodeWeightSumSm < -face2node->pos, facecenter,
+              cl->cellcenter)[Loci::Summation],
+      constraint(cl->geom_cells) {
+    int nnf = $face2node.size();
+    vect3d pf = $facecenter;
+    vect3d pc = $cl->$cellcenter - pf;
+    for (int i = 0; i < nnf; ++i) {
+      int j = (i > 1) ? (i - 1) : nnf - 1;
+      vect3d pa = $face2node[i]->$pos - pf;
+      vect3d pb = $face2node[j]->$pos - pf;
+      double Wl = fabs(dot(pc, cross(pa, pb)));  // Note factor 1/12 left off
+      join($face2node[i]->$nodeWeightSumSm, Wl);
+      join($face2node[j]->$nodeWeightSumSm, Wl);
+    }
+  }
+
+  $rule apply(face2node->nodeWeightSumSm < -face2node->pos, facecenter,
+              cr->cellcenter)[Loci::Summation],
+      constraint(cr->geom_cells) {
+    int nnf = $face2node.size();
+    vect3d pf = $facecenter;
+    vect3d pc = $cr->$cellcenter - pf;
+    for (int i = 0; i < nnf; ++i) {
+      int j = (i > 1) ? (i - 1) : nnf - 1;
+      vect3d pa = $face2node[i]->$pos - pf;
+      vect3d pb = $face2node[j]->$pos - pf;
+      double Wr = fabs(dot(pc, cross(pa, pb)));  // Note factor 1/12 left off
+      join($face2node[i]->$nodeWeightSumSm, Wr);
+      join($face2node[j]->$nodeWeightSumSm, Wr);
+    }
+  }
+
+  $rule unit(cellWeightSumSm), constraint(geom_cells) {
+    $cellWeightSumSm = 0.0;
+  }
+  $rule apply(cl->cellWeightSumSm < -face2node->pos, facecenter,
+              cl->cellcenter)[Loci::Summation],
+      constraint(cl->geom_cells) {
+    int nnf = $face2node.size();
+    vect3d pf = $facecenter;
+    vect3d pc = $cl->$cellcenter - pf;
+    for (int i = 0; i < nnf; ++i) {
+      int j = (i > 1) ? (i - 1) : nnf - 1;
+      vect3d pa = $face2node[i]->$pos - pf;
+      vect3d pb = $face2node[j]->$pos - pf;
+      double Wl = fabs(dot(pc, cross(pa, pb)));  // Note factor 1/12 left off
+      join($cl->$cellWeightSumSm, Wl);
+    }
+  }
+
+  $rule apply(cr->cellWeightSumSm < -face2node->pos, facecenter,
+              cr->cellcenter)[Loci::Summation],
+      constraint(cr->geom_cells) {
+    int nnf = $face2node.size();
+    vect3d pf = $facecenter;
+    vect3d pc = $cr->$cellcenter - pf;
+    for (int i = 0; i < nnf; ++i) {
+      int j = (i > 1) ? (i - 1) : nnf - 1;
+      vect3d pa = $face2node[i]->$pos - pf;
+      vect3d pb = $face2node[j]->$pos - pf;
+      double Wr = fabs(dot(pc, cross(pa, pb)));  // Note factor 1/12 left off
+      join($cr->$cellWeightSumSm, Wr);
+    }
+  }
+
+  // setup parametric variables for smoothing
+  $type X store<vect3d>;
+  $type cell2nodeV3dSm(X) store<vect3d>;
+  $rule unit(cell2nodeV3dSm(X)), constraint(pos) {
+    $cell2nodeV3dSm(X) = vect3d(0.0, 0.0, 0.0);
+  }
+
+  $rule apply(face2node->cell2nodeV3dSm(X) <- face2node->(pos, nodeWeightSumSm),
+              facecenter, cl->(cellcenter, X))[Loci::Summation],
+      constraint(cl->geom_cells) {
+    int nnf = $face2node.size();
+    vect3d pf = $facecenter;
+    vect3d pc = $cl->$cellcenter - pf;
+    vect3d xv = $cl->$X;
+    for (int i = 0; i < nnf; ++i) {
+      int j = (i > 1) ? (i - 1) : nnf - 1;
+      vect3d pa = $face2node[i]->$pos - pf;
+      vect3d pb = $face2node[j]->$pos - pf;
+      double Wl = fabs(dot(pc, cross(pa, pb)));  // Note factor 1/12 left off
+      double Wli = Wl / $face2node[i]->$nodeWeightSumSm;
+      double Wlj = Wl / $face2node[j]->$nodeWeightSumSm;
+      join($face2node[i]->$cell2nodeV3dSm(X), Wli * xv);
+      join($face2node[j]->$cell2nodeV3dSm(X), Wlj * xv);
+    }
+  }
+
+  $rule apply(face2node->cell2nodeV3dSm(X) <- face2node->(pos, nodeWeightSumSm),
+              facecenter, cr->(cellcenter, X))[Loci::Summation],
+      constraint(cr->geom_cells) {
+    int nnf = $face2node.size();
+    vect3d pf = $facecenter;
+    vect3d pc = $cr->$cellcenter - pf;
+    vect3d xv = $cr->$X;
+    for (int i = 0; i < nnf; ++i) {
+      int j = (i > 1) ? (i - 1) : nnf - 1;
+      vect3d pa = $face2node[i]->$pos - pf;
+      vect3d pb = $face2node[j]->$pos - pf;
+      double Wr = fabs(dot(pc, cross(pa, pb)));  // Note factor 1/12 left off
+      double Wri = Wr / $face2node[i]->$nodeWeightSumSm;
+      double Wrj = Wr / $face2node[j]->$nodeWeightSumSm;
+      join($face2node[i]->$cell2nodeV3dSm(X), Wri * xv);
+      join($face2node[j]->$cell2nodeV3dSm(X), Wrj * xv);
+    }
+  }
+
+  $type node2cellV3dSm(X) store<vect3d>;
+  $rule unit(node2cellV3dSm(X)), constraint(geom_cells) {
+    $node2cellV3dSm(X) = vect3d(0.0, 0.0, 0.0);
+  }
+
+  $rule apply(cl->node2cellV3dSm(X) <- face2node->(pos, X), facecenter,
+              cl->(cellcenter, cellWeightSumSm))[Loci::Summation],
+      constraint(cl->geom_cells) {
+    int nnf = $face2node.size();
+    vect3d pf = $facecenter;
+    vect3d pc = $cl->$cellcenter - pf;
+    double cWl = 1. / ($cl->$cellWeightSumSm);
+    for (int i = 0; i < nnf; ++i) {
+      int j = (i > 1) ? (i - 1) : nnf - 1;
+      vect3d pa = $face2node[i]->$pos - pf;
+      vect3d pb = $face2node[j]->$pos - pf;
+      double Wl = fabs(dot(pc, cross(pa, pb))) * cWl;
+      vect3d xv = 0.5 * ($face2node[i]->$X + $face2node[j]->$X);
+      join($cl->$node2cellV3dSm(X), Wl * xv);
+    }
+  }
+
+  $rule apply(cr->node2cellV3dSm(X) <- face2node->(pos, X), facecenter,
+              cr->(cellcenter, cellWeightSumSm))[Loci::Summation],
+      constraint(cr->geom_cells) {
+    int nnf = $face2node.size();
+    vect3d pf = $facecenter;
+    vect3d pc = $cr->$cellcenter - pf;
+    double cWr = 1. / ($cr->$cellWeightSumSm);
+    for (int i = 0; i < nnf; ++i) {
+      int j = (i > 1) ? (i - 1) : nnf - 1;
+      vect3d pa = $face2node[i]->$pos - pf;
+      vect3d pb = $face2node[j]->$pos - pf;
+      double Wr = fabs(dot(pc, cross(pa, pb))) * cWr;
+      vect3d xv = 0.5 * ($face2node[i]->$X + $face2node[j]->$X);
+      join($cr->$node2cellV3dSm(X), Wr * xv);
+    }
+  }
+
+  $type smoothingFinished param<bool>;
+  $rule singleton(smoothingFinished <- numSmoothingSteps, $sm) {
+    $smoothingFinished = ($$sm == $numSmoothingSteps);
+  }
+
+  $rule pointwise(v3dSmooth_X{sm=0} <- X), parametric(v3dSmooth(X)) {
+    $v3dSmooth_X{sm=0} = $X;
+  }
+
+  $rule pointwise(v3dSmooth(X) <- v3dSmooth_X{sm}), 
+    conditional(smoothingFinished{sm}) {
+    $v3dSmooth(X) = $v3dSmooth_X{sm};
+  }
+
+  $rule pointwise(v3dSmooth_X{sm+1} <- 
+                  node2cellV3dSm(cell2nodeV3dSm(v3dSmooth_X)){sm}),
+      inplace(v3dSmooth_X{sm+1} | 
+              node2cellV3dSm(cell2nodeV3dSm(v3dSmooth_X)){sm}),
+      parametric(v3dSmooth(X)), prelude{};
+
+
+  // use smoothed vorticity to reduce noisyness
+  $rule pointwise(vort_smooth <- v3dSmooth(vort)) { 
+    $vort_smooth = $v3dSmooth(vort); 
+  }
+
+  $type vort_smooth_f store<vect3d>;
+  $rule pointwise(vort_smooth_f <- (cr, cl)->(vol, vort_smooth)) {
+    $vort_smooth_f =
+        ($cr->$vort_smooth * $cl->$vol + $cl->$vort_smooth * $cr->$vol) /
+        ($cr->$vol + $cl->$vol);
+  }
+
+  $rule pointwise(vort_smooth_f <- ci->vort_smooth) {
+    $vort_smooth_f = $ci->$vort_smooth;
+  } 
+
+  OUTPUT_VECTOR("cell2node_v3d(vort_smooth)", vorticitySmooth);
+}

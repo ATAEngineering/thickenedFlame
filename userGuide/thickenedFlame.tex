@@ -1,0 +1,227 @@
+\documentclass{article}
+%% Change fonts to something friendly to acrobat
+%%
+%\usepackage{courier}
+%\usepackage{times,mathptmx}
+%\DeclareMathAlphabet{\bm}{OT1}{ptm}{b}{it}
+\usepackage{graphicx}
+\usepackage{amsmath} % used for extended formula formatting tools
+\usepackage{amssymb}
+\usepackage{theorem}
+\usepackage{euscript}
+
+\topmargin  0.0in
+\headheight  0.15in
+\headsep  0.15in
+\footskip  0.2in
+\textheight 8.45in
+
+\oddsidemargin 0.56in
+\evensidemargin \oddsidemargin
+\textwidth 5.8in
+
+\pagestyle{myheadings}
+\markright{\bf Thickened Flame Module User Guide}
+
+\begin{document}
+
+
+\title{Thickened Flame Module User Guide.}
+
+\author{ Michael Nucci and Kevin Grogan }
+
+\maketitle
+\section{Thickened Flame Model}
+
+The thickened flame model \cite{Colin} is a combustion model that artificially thickens the flame so that it may be resolved on a coarser grid. The flame thickening occurs by modifying the diffusion and reaction source terms of the species transport equations. Thickening the flame reduces the flame Damk\"ohler number, making the flame less sensitive to turbulent fluctuations. This sensitivity can be restored via the modeling of flame-vortex interactions at subgrid scales. These interactions are modeled with an efficiency function which further modifies the diffusion and reaction source terms in the case of turbulent flow. The unmodified species transport equation is shown below.
+
+\begin{equation}
+\frac{\partial \rho Y_s}{\partial t} + \tilde{\nabla} \cdot \left( \rho Y_s \tilde{u} \right) = \tilde{\nabla} \cdot \left( D \rho \tilde{\nabla} Y_s\right) + \dot{w_s} 
+\end{equation}
+
+When the thickening {\tt $F$} and efficiency {\tt $E$} factors are added, the equation is modified as shown below.
+
+\begin{equation}
+\frac{\partial \rho Y_s}{\partial t} + \tilde{\nabla} \cdot \left( \rho Y_s \tilde{u} \right) = \tilde{\nabla} \cdot \left( D F E \rho \tilde{\nabla} Y_s\right) + \frac{E}{F} \dot{w_s} 
+\end{equation}
+
+The thickening factor varies from {\tt 1} (no thickening), to a user defined maximum value {\tt $F_\mathrm{max}$}. It is dynamic in that it uses a sensor variable {\tt $\Omega$} so that it is active near the flame front and inactive away from it. 
+
+\subsection{Progress Variable Sensor}\label{SUBSEC_PVS}
+The primary implementation of the sensor function utilizes a progress variable {\tt $c$} and a user defined input {\tt $m$} which dictates where in the range {\tt [0,1)} the sensor variable should achieve its maximum value. The coefficient {\tt $k$} is used to normalize the sensor function so that the maximum value is {\tt 1}. The progress variable measures how far along the reaction is by comparing some variable {\tt $V$}, to its burned and unburned states. The dynamic thickening factor calculation is outlined in Durand \cite{Durand}. Durand uses the fuel mass fraction to calculate the progress variable, however the implementation in Loci/CHEM uses temperature. The temperature progress variable is believed to be a more robust measure of reaction progress when multiple fuels or complex chemical mechanisms are used. When the default value of {\tt $m=0.5$} is used, the coefficient {\tt $k=16$}, and the equation in \cite{Durand} is recovered.
+
+\begin{equation}
+F = 1 + \left( F_\mathrm{max} - 1\right) \Omega
+\end{equation}
+
+\begin{equation}
+\Omega = k \left[ c^p \left( 1 - c\right) \right]^2
+\end{equation}
+
+\begin{equation}
+p = \frac{m}{1 - m}
+\end{equation}
+
+\begin{equation}
+c = \frac{V - V_\mathrm u}{V_\mathrm b - V_\mathrm u}
+\end{equation}
+
+
+\subsection{Efficiency Factor}
+
+The efficiency factor models the flame's interaction with the scales smaller than the thickened flame length scale. It is therefore necessary to calculate the fluctuating velocity at this scale. Wang \cite{Wang} estimates this parameter using the Laplacian of vorticity as shown below. The Laplacian of vorticity involves three derivatives and is inherently noisy. To help with stability this quantity can be smoothed with a user specified number of smoothing steps. A single smoothing step consists of computing nodal values of the Laplacian of vorticity via a volume weighted average, and then computing cell center values using a nodal-volume weighted average.
+
+\begin{equation}
+u^{\prime}_{\Delta_{tf}} = c_2 \Delta^3_x \left| \tilde{\nabla}^{2} \left( \tilde{\nabla} \times \tilde{u} \right) \right| {\left( \frac{\Delta_{tf}}{n_x \Delta_x} \right)}^{\frac{1}{3}}
+\end{equation}
+
+The wrinkling factor {\tt $\Xi$}, is the ratio of the flame surface to its projection in the direction of propagation. It is calculated as shown below.
+
+\begin{equation}
+\Xi \left( \delta_l \right) = 1 + \beta + \frac{u^{\prime}_{\Delta_{tf}}}{s^0_l} \Gamma \left( \delta_l \right)
+\end{equation}
+
+\begin{equation}
+\Gamma \left( \delta_l \right) = 0.75 exp \left[ -1.2 {\left( \frac{u^{\prime}_{\Delta_{tf}}}{s^0_l} \right)}^{-0.3} \right] {\left( \frac{\Delta_e}{\delta_l} \right)}^{\frac{2}{3}}
+\end{equation}
+
+\begin{equation}
+\beta = \frac{2 \ln \left( 2 \right)}{3 c_{ms} \left( Re^{0.5}_{t} - 1\right)}
+\end{equation}
+
+The efficiency factor is calculated as the ratio of the wrinkling factor of the laminar flame to the wrinkling factor of the thickened flame.
+
+\begin{equation}
+E = \frac{\Xi \left( \delta^0_l \right)}{\Xi \left( \delta^{tf}_l \right)}
+\end{equation}
+
+\section{Thickened Flame Module Usage}
+
+To access the thickened flame model, load the {\tt thickenedFlame} module.
+
+\begin{verbatim}
+loadModule: thickenedFlame
+\end{verbatim}
+
+\subsection{Thickened Flame Inputs}
+
+The {\tt thickenedFlame} module has several inputs that may be specified inside of the {\tt thickenedFlame} options list.
+
+  \begin{list}{}{}
+
+    
+  \item {\tt Fmax}
+
+    The maximum value that the thickening factor can take. For typical gas turbine applications this is usually on the order of {\tt [10-100]}. This input is optional and the default value is {\tt 1}.
+    
+  \item {\tt progressVariable}
+  
+    The variable used to measure the reaction progress. Currently temperature is the only supported variable. This input is optional and the default value is {\tt T}.
+  
+  \item {\tt pvBurnedValue}
+  
+    The burned value of the progress variable. This should be the value that the progress variable takes when the reaction is complete. The units should be appropriate for the progress variable type. This input is required for all simulations using the {\tt thickenedFlame} module if not using the Damk\"ohler sensor.
+  
+  \item {\tt pvUnburnedValue}
+  
+    The unburned value of the progress variable. This should be the value that the progress variable takes when the reaction has not started. The units should be appropriate for the progress variable type. This input is required for all simulations using the {\tt thickenedFlame} module if not using the Damk\"ohler sensor.
+    
+  \item {\tt sensorMaxAtProgressVal}
+      
+    This variable is used to specify the value of the progress variable at which the flame sensor function should achieve its maximum value. This variable should be in the range {\tt [0,1)}. This input is optional and the default value is {\tt 0.5}.
+  
+  \item {\tt laminarFlameSpeed}
+    
+    The laminar flame speed used to calculate the efficiency function. The units should be that of velocity. This input is required for turbulent simulations.
+
+  \item {\tt laminarFlameThickness}
+  
+	The laminar flame thickness used to calculate the efficiency function. The units should be that of length. This input is required for turbulent simulations.
+	
+  \item {\tt coupleToSpeciesEquations}
+	  
+    This is an option to use the thickening and efficiency factors in the species transport equations. This input is optional and the default value is {\tt true}. Setting this to {\tt false} is useful for debugging purposes.
+    
+  \item {\tt dynamicThickening}
+      
+    This is an option to use a spatially varying thickening factor. This input is optional and the default value is {\tt true}. Setting this to {\tt false} uses {\tt Fmax} as the thickening factor everywhere.
+	
+  \item {\tt dimension2D}
+	
+	This option is used for 2D simulations. It sets the component that should not be considered in calculating the turbulent length scale used in calculating the efficiency factor. This option may be set to {\tt x}, {\tt y}, {\tt z}, or {\tt none}. The default option is {\tt none} unless a 2D option has been selected for {\tt multi\_scale} such as {\tt LES2DZ} in which case it would default to {\tt z}.
+
+  \end{list}
+
+The following options may also be specified outside of the {\tt thickenedFlame} options list.
+
+	\begin{list}{}{}
+	
+	\item {\tt numSmoothingSteps} 
+
+	The Laplacian of vorticity can be smoothed with a user specified number of smoothing steps by setting this variable. In practice values near 14 have been shown to adequately increase stability. The default value is 1.
+	
+	\item {\tt chemistry\_jacobian} 
+	
+	This value must be set to {\tt none} when using the thickened flame module. The chemistry jacobian can be set with {\tt tf\_chemistry\_jacobian} instead.
+	
+	\item {\tt tf\_chemistry\_jacobian} 
+	
+	This option replaces the traditional {\tt chemistry\_jacobian} option. It scales the chemistry jacobian by the same factor as the chemistry source terms, {\tt E/F}. It may be set to {\tt none}, {\tt analytic} (default), or {\tt numerical}.
+
+
+	\end{list}
+
+An example input for a thickened flame simulation using the primary progress variable sensor is shown below:
+
+\begin{verbatim}
+    // thickened flame setup with progress variable sensor
+    thickenedFlame: <Fmax=10, pvBurnedValue=2000 K, pvUnburnedValue=300 K,
+                     laminarFlameSpeed=0.1 m/s, laminarFlameThickness=0.001 m,
+                     sensorMaxAtProgressVal=0.5>
+    numSmoothingSteps: 14
+    chemistry_jacobian: none
+    tf_chemistry_jacobian: analytic
+\end{verbatim}
+
+\subsection{Thickened Flame Outputs}
+
+Loading the {\tt thickenedFlame} module provides the option for outputting some variables associated with the thickened flame calculations. To output any of the following variables, add them to the \verb!plot_output! variable in the {\tt .vars} file.
+
+  \begin{list}{}{}
+  	
+  	
+  	\item {\tt F}
+  	
+  	The thickening factor used to modify the species transport equations.
+  	
+  	\item {\tt progress}
+  	
+  	The progress variable showing how complete the reaction is. A value of {\tt 0} indicates that the reaction has not started whereas a value of {\tt 1} indicates that the reaction is complete.
+  	
+  	\item {\tt flameSensor}
+  	  	
+  	The sensor {\tt $\Omega$} that detects the presence of a flame.
+  	
+  	\item {\tt tfVelFluc}
+  	
+  	The subscale turbulent velocity fluctuation at the thickened flame length scale. This is used in the calculation of the efficiency function.
+  	
+  	\item {\tt E}
+  	
+  	The efficiency function used to model the flame's interaction with subgrid scale turbulence. A value of {\tt 1} indicates laminar flow.
+  	
+  \end{list}
+
+
+\clearpage
+
+
+
+\bibliography{thesis}
+\bibliographystyle{aiaa}
+
+\end{document}
+
+
+
+

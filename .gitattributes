@@ -1,0 +1,3 @@
+*.lh linguist-language=C++
+*.loci linguist-language=C++
+userGuide/* linguist-documentation
