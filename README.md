@@ -15,7 +15,8 @@ source framework developed at Mississippi State University (MSU) by Dr. Ed
 Luke. The framework provides a rule-based programming model and can take 
 advantage of massively parallel high performance computing systems. CHEM is a 
 full featured open source CFD code with finite-rate chemistry built on the Loci 
-framework. Both Loci and CHEM can be obtained from the 
+framework. CHEM is export controlled under the International Traffic In Arms 
+Regulations (ITAR). Both Loci and CHEM can be obtained from the 
 [SimSys Software Forum](http://www.simcenter.msstate.edu) hosted by MSU.
 
 # Installation Instructions
